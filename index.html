@@ -173,6 +173,7 @@ h2 { font-size: 16px; margin: 0; font-weight: 650; }
       <button class="btn primary" type="button" id="sendBtn">Send to office</button>
       <button class="btn" type="button" id="zipBtn">Save as zip</button>
     </div>
+    <button class="link" type="button" id="shareBtn" hidden>Send another way (Gmail, Drive…)</button>
     <div class="banner" id="markBox" hidden>
       <span id="markText"></span>
       <div class="actions" style="margin-top:8px"><button class="btn" type="button" id="markYes">Mark as sent</button><button class="link" type="button" id="markNo">Not yet</button></div>
@@ -197,6 +198,7 @@ h2 { font-size: 16px; margin: 0; font-weight: 650; }
     <div class="field"><label for="setNif">Company NIF (should be on every invoice)</label><input id="setNif" class="mono" inputmode="numeric" maxlength="9"></div>
     <div class="actions"><button class="btn primary" type="button" id="setSave">Save</button><button class="btn" type="button" id="setClose">Close</button></div>
     <p class="muted" id="storageNote"></p>
+    <p class="muted" id="officeNote"></p>
     <p class="muted" id="versionNote"></p>
     <div class="actions">
       <button class="btn" type="button" id="resendWeek">Send last 7 days again</button>
@@ -654,9 +656,10 @@ async function save(ev) {
   catch { setStatus("This phone's storage is full. Send and remove old receipts, then try again.", "err"); return; }
   rememberSupplier(d.nif, d.company);
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
-  toast("Saved on this phone");
+  toast(officeUrl ? "Saved. Sending to the office…" : "Saved on this phone");
   if (queue.length) nextInQueue(); else closeEditor();
   await refresh();
+  autoSend();
 }
 function disarmDelete() { clearTimeout(delTimer); const b = $("#del"); b.classList.remove("armed"); b.textContent = "Delete"; }
 async function onDelete() {
@@ -718,6 +721,58 @@ async function markSent(items) {
   await refresh();
 }
 
+/* ---------- automatic sending to the office (via the office's Google script) ---------- */
+let officeUrl = "", autoSending = false, lastAuto = "", autoError = "";
+function blobToBase64(b) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(b); }); }
+async function autoSend(manual) {
+  if (!officeUrl || autoSending) return;
+  if (!navigator.onLine) { autoError = "Waiting for internet."; if (manual) toast("No internet. Receipts send by themselves when it's back."); refresh(); return; }
+  let unsent = receipts.filter((r) => !r.sentAt).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (!unsent.length) return;
+  autoSending = true; autoError = ""; refreshSendNote();
+  let sent = 0;
+  try {
+    while (unsent.length) {
+      const batch = pickBatch(unsent).slice(0, 25);
+      const files = [];
+      for (const f of filesFor(batch)) files.push({ name: f.name, type: f.type || "application/octet-stream", data: await blobToBase64(f) });
+      const res = await fetch(officeUrl, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ from: me, count: batch.length, files,
+          summary: batch.map((r) => `${fmtDate(r.date)}  ${r.company || r.nif || "?"}  ${r.invoiceNumber || ""}  ${fmtMoney(r.total)}`).join("\n") }) });
+      const out = await res.json().catch(() => ({}));
+      if (!out.ok) throw new Error(out.error || "The office didn't accept the upload.");
+      await markSent(batch);
+      sent += batch.length;
+      const done = new Set(batch.map((r) => r.id));
+      unsent = unsent.filter((r) => !done.has(r.id));
+    }
+    lastAuto = new Date().toTimeString().slice(0, 5);
+  } catch (e) {
+    autoError = /bad key/.test(e.message) ? "The office link is no longer valid. Ask the office for a new setup link." : "Couldn't reach the office right now. Trying again later.";
+  } finally {
+    autoSending = false;
+    await refresh();
+  }
+  if (sent) toast(sent === 1 ? "Sent to the office" : `${sent} sent to the office`);
+}
+function refreshSendNote() {
+  const unsent = receipts.filter((r) => !r.sentAt);
+  const size = unsent.reduce((s, r) => s + (r.blob?.size || 0), 0);
+  $("#shareBtn").hidden = !officeUrl || !unsent.length;
+  if (officeUrl) {
+    $("#sendBtn").textContent = autoSending ? "Sending…" : "Send now";
+    $("#zipBtn").hidden = true;
+    $("#sendNote").textContent = autoSending ? `Sending ${unsent.length} receipt${unsent.length === 1 ? "" : "s"} to the office…`
+      : unsent.length ? (autoError || "These send to the office by themselves as soon as there's internet.")
+      : "Everything has been sent to the office automatically" + (lastAuto ? ` (last at ${lastAuto}).` : ".");
+  } else {
+    $("#sendBtn").textContent = "Send to office"; $("#zipBtn").hidden = false;
+    $("#sendNote").textContent = unsent.length
+      ? `${unsent.length} receipt${unsent.length === 1 ? "" : "s"} (${mb(size)}). Send by email${office ? " to " + office : ""} at the end of the day. Ask the office for the setup link to make this automatic.`
+      : "Everything on this phone has been sent.";
+  }
+}
+
 /* ---------- list ---------- */
 async function refresh() {
   try { receipts = await db.all(); } catch { receipts = []; }
@@ -725,10 +780,7 @@ async function refresh() {
   const unsent = receipts.filter((r) => !r.sentAt);
   $("#unsentCount").textContent = unsent.length;
   $("#sendBtn").disabled = $("#zipBtn").disabled = !unsent.length;
-  const size = unsent.reduce((s, r) => s + (r.blob?.size || 0), 0);
-  $("#sendNote").textContent = unsent.length
-    ? `${unsent.length} receipt${unsent.length === 1 ? "" : "s"} (${mb(size)}). Send by email${office ? " to " + office : ""} at the end of the day. Gmail or Google Drive keep the photos intact; WhatsApp shrinks and renames them.`
-    : "Everything on this phone has been sent.";
+  refreshSendNote();
   $("#nameChip").textContent = me + " ⚙";
   const shown = filter === "unsent" ? unsent : receipts;
   if (!shown.length) {
@@ -747,6 +799,7 @@ async function refresh() {
 function showSettings() {
   $("#setName").value = me; $("#setOffice").value = office; $("#setNif").value = companyNif; $("#settings").hidden = false;
   $("#versionNote").textContent = "App version " + APP_VERSION;
+  $("#officeNote").textContent = officeUrl ? "Connected to the office: receipts send automatically." : "Not connected to the office yet: open the setup link the office sent you.";
   if (navigator.storage?.estimate) navigator.storage.estimate().then((e) => { $("#storageNote").textContent = `${receipts.length} receipts on this phone, using ${mb(e.usage || 0)}.`; }).catch(() => {});
   $("#settings").scrollIntoView({ behavior: "smooth" });
 }
@@ -784,7 +837,13 @@ $("#setSave").addEventListener("click", () => {
   companyNif = $("#setNif").value.replace(/\D/g, ""); store.set("rb-company-nif", companyNif || "none");
   $("#settings").hidden = true; refresh(); toast("Saved");
 });
-$("#resendWeek").addEventListener("click", () => { const from = new Date(Date.now() - 7 * 864e5).toISOString(); send(receipts.filter((r) => r.createdAt >= from)); });
+$("#resendWeek").addEventListener("click", async () => {
+  const from = new Date(Date.now() - 7 * 864e5).toISOString();
+  const week = receipts.filter((r) => r.createdAt >= from);
+  if (!officeUrl) return send(week);
+  for (const r of week) await db.put({ ...r, sentAt: null });   // the office recognises ones it already has
+  await refresh(); autoSend(true);
+});
 $("#cleanup").addEventListener("click", async (e) => {
   const b = e.currentTarget;
   if (!b.classList.contains("armed")) { b.classList.add("armed"); b.textContent = "Tap again to remove"; setTimeout(() => { b.classList.remove("armed"); b.textContent = "Remove sent older than 30 days"; }, 4000); return; }
@@ -807,7 +866,8 @@ $("#invoice").addEventListener("input", checkDup);
 $("#nif").addEventListener("change", async () => { const n = $("#nif").value.replace(/\D/g, ""); checkDup();
   if (!$("#company").value && n.length === 9) { const name = await lookupName(n); if (name && !$("#company").value) $("#company").value = name; } });
 $("#preview").addEventListener("click", (e) => e.target.classList.toggle("big"));
-$("#sendBtn").addEventListener("click", () => send(receipts.filter((r) => !r.sentAt).reverse()));
+$("#sendBtn").addEventListener("click", () => officeUrl ? autoSend(true) : send(receipts.filter((r) => !r.sentAt).reverse()));
+$("#shareBtn").addEventListener("click", () => send(receipts.filter((r) => !r.sentAt).reverse()));
 $("#zipBtn").addEventListener("click", () => saveZip(receipts.filter((r) => !r.sentAt).reverse()));
 $("#markYes").addEventListener("click", async () => { if (pendingMark) await markSent(pendingMark); pendingMark = null; $("#markBox").hidden = true; toast("Marked as sent"); });
 $("#markNo").addEventListener("click", () => { pendingMark = null; $("#markBox").hidden = true; });
@@ -815,9 +875,11 @@ document.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("cl
   filter = b.dataset.filter; document.querySelectorAll("[data-filter]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); refresh();
 }));
 $("#list").addEventListener("click", (e) => { const el = e.target.closest(".row"); const r = el && receipts.find((x) => x.id === el.dataset.id); if (r) { queue = []; openEditor(r); } });
-document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("#main").hidden) takeShared(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("#main").hidden) { takeShared(); autoSend(); } });
+window.addEventListener("online", () => autoSend());
+setInterval(() => { if (!document.hidden) autoSend(); }, 3 * 60 * 1000);
 
-const APP_VERSION = "10";
+const APP_VERSION = "11";
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
   // when a new version has just been installed, switch to it once
@@ -825,8 +887,18 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (!reloaded && !editing) { reloaded = true; location.reload(); } });
 }
 me = store.get("rb-name"); office = store.get("rb-office");
+{
+  const qs = new URLSearchParams(location.search);
+  const o = qs.get("office");
+  if (o && /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec\?k=[\w-]+$/.test(o)) {
+    store.set("rb-office-url", o);
+    setTimeout(() => toast("Connected to the office: receipts now send automatically"), 800);
+  }
+  if (qs.has("office") || qs.has("shared")) history.replaceState(null, "", location.pathname);
+  officeUrl = store.get("rb-office-url");
+}
 { const n = store.get("rb-company-nif"); if (n) companyNif = n === "none" ? "" : n; }
-if (me) start(); else { $("#setup").hidden = false; }
+if (me) { start(); setTimeout(() => autoSend(), 1500); } else { $("#setup").hidden = false; }
 </script>
 </body>
 </html>
