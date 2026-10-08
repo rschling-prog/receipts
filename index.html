@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1E6B58">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Receipts">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Receipt Box</title>
+<style>
+/* Phone-only, works offline. Scan action, review slip, "to send" card, receipts kept on this phone. */
+:root {
+  --bg: #EDF1EF; --surface: #FFFFFF; --ink: #16201D; --muted: #5B6A65; --line: #D3DBD8;
+  --accent: #1E6B58; --accent-ink: #FFFFFF; --accent-soft: #DCEBE5;
+  --warn: #9A5600; --warn-soft: #FBEBD3; --danger: #B3261E;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Roboto Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0E1412; --surface: #18201D; --ink: #E5ECE9; --muted: #92A19B; --line: #2A3531;
+    --accent: #5CC2A5; --accent-ink: #062219; --accent-soft: #1C3A31;
+    --warn: #E8AC5A; --warn-soft: #3A2A12; --danger: #F08A80; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 400 15px/1.5 var(--font); padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+[hidden] { display: none !important; }
+.app { max-width: 560px; margin: 0 auto; padding-inline: 16px; padding-block: 16px 56px; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+h1 { font-size: 25px; line-height: 1.1; font-weight: 750; letter-spacing: -0.015em; margin: 0; }
+h2 { font-size: 16px; margin: 0; font-weight: 650; }
+.chip { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 6px 12px; font: 600 13px var(--font); cursor: pointer; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.card { background: var(--surface); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.muted { color: var(--muted); font-size: 14px; margin: 0; }
+.banner { padding: 10px 14px; border-radius: 12px; font-size: 14px; background: var(--warn-soft); color: var(--warn); }
+
+.capture { display: flex; flex-direction: column; gap: 10px; }
+.scan-btn { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 80px; border-radius: 16px; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink); font-size: 20px; font-weight: 700; }
+.scan-btn svg { width: 28px; height: 28px; }
+.alt-btn { display: flex; align-items: center; justify-content: center; min-height: 48px; border-radius: 12px; cursor: pointer;
+  border: 1.5px dashed var(--line); color: var(--accent); font-weight: 650; text-align: center; padding: 8px 12px; }
+.link { background: none; border: 0; padding: 4px 2px; color: var(--accent); font: 650 14px var(--font); cursor: pointer; }
+:is(button, input, select, .row):focus-visible, input[type=file]:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.slip-wrap::after { content: ""; display: block; height: 9px; background: radial-gradient(circle at 7px 0, var(--surface) 6.5px, transparent 7px) 0 0 / 14px 9px repeat-x; }
+.slip { background: var(--surface); border-radius: 14px 14px 0 0; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.slip-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.preview { width: 100%; max-height: 34vh; object-fit: contain; background: var(--bg); border-radius: 10px; display: block; }
+.preview.big { max-height: none; }
+.status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); min-height: 21px; }
+.status.ok { color: var(--accent); } .status.err { color: var(--danger); }
+.status.busy::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .status.busy::before { animation-duration: 3s; } }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 360px) { .grid2 { grid-template-columns: 1fr; } }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field label { font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.field input { width: 100%; min-height: 46px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: 500 16px var(--font); }
+.field input.mono { font-family: var(--mono); font-size: 15px; }
+.field input:focus { border-color: var(--accent); outline: none; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { min-height: 46px; padding: 0 18px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  font: 650 15px var(--font); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); flex: 1; }
+.btn.danger { color: var(--danger); margin-left: auto; }
+.btn.danger.armed { background: var(--danger); border-color: var(--danger); color: var(--surface); }
+.btn:disabled { opacity: .55; cursor: default; }
+.dup { padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 14px; }
+
+.send-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.count { font: 750 30px/1 var(--font); font-variant-numeric: tabular-nums; }
+
+.list-tools { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.seg button { border: 0; background: none; color: var(--muted); font: 650 13px var(--font); padding: 6px 12px; border-radius: 7px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.rows { list-style: none; margin: 10px 0 0; padding: 0; background: var(--surface); border-radius: 14px; overflow: hidden; }
+.row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--line); cursor: pointer; }
+.row:first-child { border-top: 0; }
+.thumb { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: var(--bg); display: grid; place-items: center; color: var(--muted); font: 700 10px var(--font); }
+.who { min-width: 0; }
+.who b { display: block; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who span { display: block; font: 400 13px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.when { text-align: right; font: 500 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.pill { font: 700 10px var(--font); letter-spacing: .06em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; }
+.pill.new { background: var(--warn-soft); color: var(--warn); }
+.pill.sent { background: var(--accent-soft); color: var(--accent); }
+.empty { background: var(--surface); border-radius: 14px; padding: 26px 20px; text-align: center; color: var(--muted); margin-top: 10px; }
+.empty b { display: block; color: var(--ink); font-size: 16px; margin-bottom: 4px; }
+.center { min-height: 70vh; display: flex; flex-direction: column; justify-content: center; gap: 14px; max-width: 360px; margin: 0 auto; width: 100%; }
+.big-input { width: 100%; min-height: 54px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: 600 20px var(--font); }
+.toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg);
+  padding: 10px 18px; border-radius: 999px; font-weight: 650; font-size: 14px; max-width: calc(100% - 32px); z-index: 5; text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="app" id="setup" hidden>
+  <form class="center" id="setupForm">
+    <h1>Receipt Box</h1>
+    <p class="muted">Your name goes on every receipt you scan, so the office knows who bought what.</p>
+    <div class="field"><label for="nameInput">Your name</label><input class="big-input" id="nameInput" maxlength="40" autocomplete="given-name"></div>
+    <div class="field"><label for="officeInput">Office email (where you send receipts)</label><input class="big-input" style="font-size:16px" id="officeInput" type="email" inputmode="email" placeholder="—"></div>
+    <button class="btn primary" type="submit">Start</button>
+  </form>
+</div>
+
+<div class="app" id="main" hidden>
+  <header>
+    <h1>Receipt Box</h1>
+    <button class="chip" id="nameChip" type="button" title="Settings"></button>
+  </header>
+  <div class="banner" id="installHint" hidden></div>
+
+  <section class="capture" id="capture">
+    <input class="vh" type="file" id="cam" accept="image/*" capture="environment">
+    <label for="cam" class="scan-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>
+      Scan a receipt
+    </label>
+    <input class="vh" type="file" id="pick" accept="image/*,application/pdf,.pdf" multiple>
+    <label for="pick" class="alt-btn">Add photos or PDF invoices</label>
+    <button class="link" type="button" id="manual">Type one in without a photo</button>
+  </section>
+
+  <section class="slip-wrap" id="editor" hidden>
+    <form class="slip" id="form" autocomplete="off">
+      <div class="slip-head">
+        <h2 id="editorTitle">New receipt</h2>
+        <button class="link" type="button" id="cancel">Cancel</button>
+      </div>
+      <img class="preview" id="preview" alt="The receipt" hidden>
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+      <div class="field"><label for="company">Company</label><input id="company" placeholder="e.g. Lidl & Companhia"></div>
+      <div class="grid2">
+        <div class="field"><label for="date">Invoice date</label><input id="date" type="date"></div>
+        <div class="field"><label for="invoice">Invoice number</label><input id="invoice" class="mono" placeholder="e.g. FS 2026/1042" autocapitalize="characters"></div>
+        <div class="field"><label for="nif">Company NIF</label><input id="nif" class="mono" inputmode="numeric" placeholder="—"></div>
+        <div class="field"><label for="total">Total €</label><input id="total" class="mono" inputmode="decimal" placeholder="—"></div>
+      </div>
+      <div class="dup" id="dup" hidden></div>
+      <div class="actions">
+        <button class="btn primary" type="submit" id="save">Save</button>
+        <button class="btn" type="button" id="skip" hidden>Skip</button>
+        <button class="btn danger" type="button" id="del" hidden>Delete</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" id="sendCard">
+    <div class="send-head">
+      <h2>To send to the office</h2>
+      <span class="count" id="unsentCount">0</span>
+    </div>
+    <p class="muted" id="sendNote"></p>
+    <div class="actions">
+      <button class="btn primary" type="button" id="sendBtn">Send to office</button>
+      <button class="btn" type="button" id="zipBtn">Save as zip</button>
+    </div>
+    <div class="banner" id="markBox" hidden>
+      <span id="markText"></span>
+      <div class="actions" style="margin-top:8px"><button class="btn" type="button" id="markYes">Mark as sent</button><button class="link" type="button" id="markNo">Not yet</button></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="list-tools">
+      <h2>On this phone</h2>
+      <div class="seg" role="group" aria-label="Show">
+        <button type="button" data-filter="unsent" aria-pressed="true">Not sent</button>
+        <button type="button" data-filter="all" aria-pressed="false">All</button>
+      </div>
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <section class="card" id="settings" hidden>
+    <h2>Settings</h2>
+    <div class="field"><label for="setName">Your name</label><input id="setName" maxlength="40"></div>
+    <div class="field"><label for="setOffice">Office email</label><input id="setOffice" type="email" inputmode="email"></div>
+    <div class="field"><label for="setNif">Company NIF (should be on every invoice)</label><input id="setNif" class="mono" inputmode="numeric" maxlength="9"></div>
+    <div class="actions"><button class="btn primary" type="button" id="setSave">Save</button><button class="btn" type="button" id="setClose">Close</button></div>
+    <p class="muted" id="storageNote"></p>
+    <div class="actions">
+      <button class="btn" type="button" id="resendWeek">Send last 7 days again</button>
+      <button class="btn danger" type="button" id="cleanup">Remove sent older than 30 days</button>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="jsQR.js"></script>
+<script src="jszip.min.js"></script>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const SEND_LIMIT = 18 * 1024 * 1024;   // keeps one email under Gmail's 25 MB
+let me = "", office = "", filter = "unsent", companyNif = "513482849";  // Hilarious Green Lda; change in Settings
+let receipts = [], queue = [], editing = null, delTimer = null, pendingMark = null;
+
+/* ---------- storage ---------- */
+const store = {
+  get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+function suppliers() { try { return JSON.parse(store.get("rb-suppliers") || "{}"); } catch { return {}; } }
+function rememberSupplier(nif, name) { if (!nif || !name) return; const s = suppliers(); s[nif] = name; store.set("rb-suppliers", JSON.stringify(s)); }
+/* Company name from the NIF via the EU VAT register (VIES). Needs internet; without it the office PC fills it in. */
+function niceName(n) {
+  n = String(n || "").replace(/\s+/g, " ").trim();
+  if (!n || n !== n.toUpperCase()) return n;
+  const small = new Set(["de", "da", "do", "das", "dos", "e", "em", "a", "o"]);
+  const suf = { LDA: "Lda", UNIPESSOAL: "Unipessoal", SA: "SA", "S.A.": "S.A.", SGPS: "SGPS" };
+  return n.split(" ").map((w, i) => {
+    const core = w.replace(/[,;]+$/, ""), tail = w.slice(core.length);
+    if (suf[core]) return suf[core] + tail;
+    if (i && small.has(core.toLowerCase())) return core.toLowerCase() + tail;
+    if (core.length <= 3 && /^[A-ZÀ-Ý]+$/.test(core)) return w;
+    return core.split("-").map((x) => x.charAt(0) + x.slice(1).toLowerCase()).join("-") + tail;
+  }).join(" ");
+}
+async function lookupName(nif) {
+  nif = String(nif || "").replace(/\D/g, "");
+  if (nif.length !== 9) return "";
+  const known = suppliers()[nif]; if (known) return known;
+  if (!navigator.onLine) return "";
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 7000);
+  try {
+    const r = await fetch(`https://ec.europa.eu/taxation_customs/vies/rest-api/ms/PT/vat/${nif}`, { signal: ctl.signal, headers: { Accept: "application/json" } });
+    const j = await r.json();
+    const name = j && j.isValid && j.name && j.name.replace(/[-\s]/g, "") ? niceName(j.name) : "";
+    if (name) rememberSupplier(nif, name);
+    return name;
+  } catch { return ""; } finally { clearTimeout(t); }
+}
+
+const db = (() => {
+  let p = null;
+  const open = () => p || (p = new Promise((res, rej) => {
+    const rq = indexedDB.open("receiptbox-phone", 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore("receipts", { keyPath: "id" });
+    rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
+  }));
+  const tx = async (mode, fn) => { const d = await open(); return new Promise((res, rej) => {
+    const t = d.transaction("receipts", mode); const r = fn(t.objectStore("receipts"));
+    t.oncomplete = () => res(r && r.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); };
+  return { put: (v) => tx("readwrite", (s) => s.put(v)), del: (k) => tx("readwrite", (s) => s.delete(k)), all: () => tx("readonly", (s) => s.getAll()) };
+})();
+
+/* ---------- helpers ---------- */
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 3000); }
+function setStatus(msg, kind) { const s = $("#status"); s.textContent = msg; s.className = "status" + (kind ? " " + kind : ""); }
+function fmtDate(iso) { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || ""); return m ? `${m[3]}/${m[2]}/${m[1]}` : "No date"; }
+function fmtMoney(v) { return v === "" || v == null || isNaN(+v) ? "" : (+v).toFixed(2).replace(".", ",") + " €"; }
+function today() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function uid() { return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2); }
+function slug(s, n = 40) { return (String(s || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, n).replace(/-+$/, "")) || "x"; }
+function mb(n) { return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB"; }
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+/* ---------- reading the AT QR code ---------- */
+function canvasFrom(src, sx, sy, sw, sh, maxSide) {
+  const s = Math.min(1, maxSide / Math.max(sw, sh));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(sw * s)); c.height = Math.max(1, Math.round(sh * s));
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+  g.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+function scanCanvas(c, both) {
+  const d = c.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, c.width, c.height);
+  const q = window.jsQR && jsQR(d.data, c.width, c.height, { inversionAttempts: both ? "attemptBoth" : "dontInvert" });
+  return q && q.data ? q.data : null;
+}
+async function findQr(src) {   // a few sizes and crops; yields between tries so the page stays responsive
+  const w = src.width, h = src.height;
+  const tries = [
+    [0, 0, w, h, 1400], [0, h * 0.45, w, h * 0.55, 1600],   // QR codes usually sit at the bottom
+    [0, 0, w, h, 2200], [0, 0, w, h * 0.55, 1600], [0, 0, w, h, 900],
+  ];
+  let first = null;
+  for (let i = 0; i < tries.length; i++) {
+    const [sx, sy, sw, sh, side] = tries[i];
+    const t = scanCanvas(canvasFrom(src, sx, sy, sw, sh, side), i === tries.length - 1);
+    if (t && parseAT(t)) return t;
+    if (t && !first) first = t;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return first;
+}
+function withTimeout(p, ms, msg) {
+  let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(msg)), ms); })]).finally(() => clearTimeout(t));
+}
+const INVOICE_TYPES = { FT: "Fatura", FS: "Fatura simplificada", FR: "Fatura-recibo", NC: "Nota de crédito", ND: "Nota de débito" };
+function parseAT(t) {
+  if (!/(^|\*)A:\w+\*/.test(t || "") || !/\*G:/.test(t)) return null;
+  const o = {};
+  for (const part of t.split("*")) { const i = part.indexOf(":"); if (i > 0) o[part.slice(0, i)] = part.slice(i + 1); }
+  const f = o.F || "";
+  return {
+    nif: o.A || "", customerNif: o.B && o.B !== "999999990" ? o.B : "",
+    date: /^\d{8}$/.test(f) ? `${f.slice(0, 4)}-${f.slice(4, 6)}-${f.slice(6, 8)}` : "",
+    invoiceNumber: (o.G || "").trim(), docType: (o.D || "").trim().toUpperCase(), total: o.O || "",
+  };
+}
+function parseText(t) {
+  const r = {};
+  const doc = t.match(/\b(FT|FR|FS|FA|NC|ND|VD|RG|FAC|FTS)\s+[A-Z0-9][A-Z0-9.\-]*\s?\/\s?\d+\b/);
+  if (doc) r.invoiceNumber = doc[0].replace(/\s*\/\s*/, "/");
+  else {
+    const m = t.match(/(?:invoice|fatura|factura|rechnung|facture)\s*(?:n(?:o|º|°|r)?\.?|number|nummer|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9\/\-.]{3,24})/i);
+    if (m && /\d/.test(m[1])) r.invoiceNumber = m[1];
+  }
+  const d1 = t.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/), d2 = t.match(/\b(\d{2})[\/.\-](\d{2})[\/.\-](20\d{2})\b/);
+  if (d1) r.date = `${d1[1]}-${d1[2]}-${d1[3]}`; else if (d2 && +d2[2] <= 12) r.date = `${d2[3]}-${d2[2]}-${d2[1]}`;
+  const own = (typeof companyNif !== 'undefined' ? companyNif : '');   // skip our own NIF: it is the customer on purchase invoices
+  for (const m of t.matchAll(/\b(?:NIF|NIPC|Contribuinte|VAT(?:\s*(?:No|ID|number))?)\s*(?:n\.?\s?º?)?\s*[:.]?\s*(?:PT)?\s?(\d{3}\s?\d{3}\s?\d{3})\b/gi)) {
+    const n = m[1].replace(/\s/g, "");
+    if (n !== own) { r.nif = n; break; }
+  }
+  // total: the largest amount written next to a "Total" label
+  let best = 0;
+  for (const m of t.matchAll(/total[^0-9€\n]{0,25}(?:€|eur)?\s*(\d{1,3}(?:[ .]\d{3})*,\d{2}|\d+[.,]\d{2})\s*(?:€|eur)?/gi)) {
+    const v = parseFloat(m[1].replace(/[ .](?=\d{3}\b)/g, "").replace(",", "."));
+    if (v > best && v < 1e6) best = v;
+  }
+  if (best) r.total = best.toFixed(2);
+  return r;
+}
+
+/* ---------- reading files ---------- */
+async function loadImage(file) {
+  try { return await createImageBitmap(file, { imageOrientation: "from-image" }); }
+  catch { return await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("bad image")); i.src = URL.createObjectURL(file); }); }
+}
+const toBlob = (c, q) => new Promise((r) => c.toBlob(r, "image/jpeg", q));
+let pdfReady = null;
+function loadPdfJs() {
+  return pdfReady || (pdfReady = new Promise((res, rej) => {
+    const s = document.createElement("script"); s.src = "pdf.min.js";
+    s.onload = () => { pdfjsLib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js"; res(pdfjsLib); };
+    s.onerror = () => { pdfReady = null; rej(new Error("pdf.js")); };
+    document.head.appendChild(s);
+  }));
+}
+async function readItem(item) {
+  const f = item.file;
+  if (item.kind === "pdf") {
+    if (f.size > 15 * 1024 * 1024) throw new Error("That PDF is over 15 MB.");
+    item.blob = f; item.fileType = "pdf";
+    let lib; try { lib = await loadPdfJs(); } catch { item.note = "Couldn't open the PDF reader. Fill in the fields."; return; }
+    const task = lib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) });
+    let triedNif = false;
+    task.onPassword = (update) => {   // many PT invoices (EDP, banks) are locked with the customer's NIF
+      const nif = companyNif;
+      if (!triedNif && nif) { triedNif = true; update(nif); }
+      else { item.note = "This PDF is password-protected. Open it yourself and type the details."; task.destroy(); }
+    };
+    let pdf;
+    try { pdf = await withTimeout(task.promise, 30000, "This PDF took too long to open. Fill in the fields."); }
+    catch (e) { task.destroy(); if (!item.note) item.note = "This PDF couldn't be opened (" + ((e && (e.name + ": " + e.message)) || "unknown error") + "). Fill in the fields."; return; }
+    let text = "";
+    for (let n = 1; n <= Math.min(pdf.numPages, 2); n++) {
+      const page = await pdf.getPage(n);
+      const vp = page.getViewport({ scale: Math.min(4, 1800 / page.getViewport({ scale: 1 }).width) });
+      const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+      const g = c.getContext("2d", { willReadFrequently: true }); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: g, viewport: vp }).promise;
+      if (n === 1) { item.preview = canvasFrom(c, 0, 0, c.width, c.height, 1000).toDataURL("image/jpeg", 0.8); item.thumb = canvasFrom(c, 0, 0, c.width, c.height, 200).toDataURL("image/jpeg", 0.7); }
+      try { text += " " + (await page.getTextContent()).items.map((i) => i.str).join(" "); } catch {}
+      if (!item.qr) { const q = scanCanvas(c) || await findQr(c); if (q && parseAT(q)) item.qr = q; }
+      if (item.qr) break;
+    }
+    item.text = text;
+    item.diag = `QR code: ${item.qr ? "found" : "not found"} · text: ${text.trim().length.toLocaleString()} characters · ${pdf.numPages} page${pdf.numPages === 1 ? "" : "s"}`;
+  } else {
+    const img = await loadImage(f);
+    const q = await findQr(img); if (q) item.qr = q;
+    item.blob = await toBlob(canvasFrom(img, 0, 0, img.width, img.height, 1800), 0.8);
+    item.fileType = "jpg";
+    item.preview = URL.createObjectURL(item.blob);
+    item.thumb = canvasFrom(img, 0, 0, img.width, img.height, 200).toDataURL("image/jpeg", 0.7);
+  }
+}
+
+/* ---------- review slip ---------- */
+function addFiles(files) {
+  const list = [...files].filter((f) => /^image\//.test(f.type) || f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+  if (!list.length) { toast("Pick photos or PDF files"); return; }
+  for (const f of list) queue.push({ file: f, kind: (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) ? "pdf" : "image" });
+  if (!editing) nextInQueue(); else updateQueueTitle();
+}
+function updateQueueTitle() {
+  if (!editing || editing.id) return;
+  $("#editorTitle").textContent = queue.length ? `New receipt · ${queue.length} more after this` : "New receipt";
+  $("#skip").hidden = !queue.length;
+}
+async function nextInQueue() {
+  const item = queue.shift();
+  if (!item) { closeEditor(); return; }
+  openEditor({});
+  editing.item = item;
+  setStatus(item.kind === "pdf" ? "Opening the PDF…" : "Looking for the invoice QR code…", "busy");
+  await nextFrame();
+  try { await withTimeout(readItem(item), 60000, "Reading this file took too long. Fill in the fields."); }
+  catch (e) { if (editing && editing.item === item) setStatus(e.message === "bad image" ? "That photo couldn't be opened. Try another." : (e.message || "Couldn't read that file."), "err"); return; }
+  if (!editing || editing.item !== item) return;
+  if (item.preview) { $("#preview").src = item.preview; $("#preview").hidden = false; }
+  const at = item.qr && parseAT(item.qr);
+  const fromText = item.text ? parseText(item.text) : {};
+  const got = at ? { ...at, total: at.total || fromText.total } : fromText;
+  fillEmpty(got);
+  let fromVies = false;
+  if (got.nif && !$("#company").value) {
+    const known = suppliers()[got.nif];
+    if (known) $("#company").value = known;
+    else { setStatus("Looking up the company name…", "busy"); const n = await lookupName(got.nif);
+      if (!editing || editing.item !== item) return;
+      if (n && !$("#company").value) { $("#company").value = n; fromVies = true; } }
+  }
+  checkDup();
+  if (at && !(at.docType in INVOICE_TYPES)) {
+    setStatus(`This is a ${at.docType || "document"} (delivery note or payment receipt), not an invoice. Ask for the fatura.`, "err");
+  }
+  else if (at && companyNif && at.customerNif !== companyNif) {
+    setStatus(at.customerNif
+      ? `Made out to NIF ${at.customerNif}, not the company's NIF ${companyNif}. Saved anyway if you tap Save.`
+      : `No company NIF on this receipt. Next time ask the till for a fatura with NIF ${companyNif}.`, "err");
+  }
+  else if (at) setStatus($("#company").value
+      ? (fromVies ? "Read from the QR code; company name from the EU VAT register. Check and save." : "Read from the invoice QR code. Check and save.")
+      : "Read from the QR code. No internet for the company name: save anyway, the office fills it in.", "ok");
+  else if (item.note) setStatus(item.note, "err");
+  else if (item.kind === "pdf" && (got.invoiceNumber || got.date)) setStatus("Filled from the PDF text. Check every field before saving. (" + (item.diag || "") + ")", "");
+  else setStatus("Nothing could be read automatically. Fill in the fields." + (item.diag ? " (" + item.diag + ")" : ""), "err");
+}
+function fillEmpty(got) {
+  const set = (id, v) => { if (v && !$(id).value) $(id).value = v; };
+  set("#company", got.company); set("#date", got.date); set("#invoice", got.invoiceNumber);
+  set("#nif", got.nif); set("#total", got.total ? String(got.total).replace(".", ",") : "");
+  if (editing) editing.customerNif = got.customerNif || "";
+}
+function openEditor(r) {
+  editing = { id: r.id || null, item: null, customerNif: r.customerNif || "", record: r.id ? r : null };
+  $("#company").value = r.company || ""; $("#date").value = r.date || ""; $("#invoice").value = r.invoiceNumber || "";
+  $("#nif").value = r.nif || ""; $("#total").value = r.total ? String(r.total).replace(".", ",") : "";
+  const p = $("#preview"); p.classList.remove("big"); p.hidden = true; p.removeAttribute("src");
+  if (r.id) {
+    if (r.fileType === "jpg" && r.blob) { p.src = URL.createObjectURL(r.blob); p.hidden = false; }
+    else if (r.thumb) { p.src = r.thumb; p.hidden = false; }
+  }
+  $("#editorTitle").textContent = r.id ? "Edit receipt" : "New receipt";
+  $("#del").hidden = !r.id; $("#skip").hidden = true; $("#dup").hidden = true;
+  disarmDelete();
+  setStatus(r.id ? (r.sentAt ? `Sent ${fmtDate(r.sentAt)}. If you change it, it will be sent again.` : "Not sent yet.") : "", "");
+  $("#capture").hidden = true; $("#editor").hidden = false;
+  updateQueueTitle();
+  $("#editor").scrollIntoView({ block: "start", behavior: "smooth" });
+}
+function closeEditor() { editing = null; queue = []; $("#editor").hidden = true; $("#capture").hidden = false; }
+function checkDup() {
+  const inv = $("#invoice").value.replace(/\s+/g, "").toLowerCase(), nif = $("#nif").value.trim();
+  const hit = inv && receipts.find((r) => r.id !== editing?.id && (r.invoiceNumber || "").replace(/\s+/g, "").toLowerCase() === inv && (!nif || !r.nif || r.nif === nif));
+  $("#dup").hidden = !hit;
+  if (hit) $("#dup").textContent = `Already on this phone: ${hit.company} ${hit.invoiceNumber}, ${fmtDate(hit.date)}. Save only if it's a different document.`;
+}
+async function save(ev) {
+  ev.preventDefault();
+  if (!editing) return;
+  const d = { company: $("#company").value.trim(), date: $("#date").value, invoiceNumber: $("#invoice").value.trim(),
+    nif: $("#nif").value.replace(/\D/g, ""), total: $("#total").value.trim().replace(",", ".") };
+  const item = editing.item;
+  if (item && !item.blob) { setStatus("Still reading the file…", "busy"); return; }
+  if (!d.company && !d.invoiceNumber && !item) { setStatus("Add at least the company or the invoice number.", "err"); return; }
+  const rec = editing.record
+    ? { ...editing.record, ...d, sentAt: null, updatedAt: new Date().toISOString() }
+    : { id: uid(), ...d, customerNif: editing.customerNif, addedBy: me, qr: item?.qr || "", source: item?.kind || "manual",
+        blob: item?.blob || null, fileType: item?.fileType || "", thumb: item?.thumb || "", createdAt: new Date().toISOString(), sentAt: null };
+  try { await db.put(rec); }
+  catch { setStatus("This phone's storage is full. Send and remove old receipts, then try again.", "err"); return; }
+  rememberSupplier(d.nif, d.company);
+  if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+  toast("Saved on this phone");
+  if (queue.length) nextInQueue(); else closeEditor();
+  await refresh();
+}
+function disarmDelete() { clearTimeout(delTimer); const b = $("#del"); b.classList.remove("armed"); b.textContent = "Delete"; }
+async function onDelete() {
+  const b = $("#del");
+  if (!b.classList.contains("armed")) { b.classList.add("armed"); b.textContent = "Tap again to delete"; delTimer = setTimeout(disarmDelete, 4000); return; }
+  disarmDelete(); await db.del(editing.id); toast("Deleted"); closeEditor(); refresh();
+}
+
+/* ---------- sending to the office ---------- */
+function fileName(r) { return `${r.date || "nodate"}_${slug(r.company)}_${slug(r.invoiceNumber, 30)}_${r.id.slice(0, 8)}.${r.fileType}`; }
+function buildCsv(items) {
+  const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const head = ["ReceiptBoxId", "Date", "Company", "Company NIF", "Invoice number", "Total (EUR)", "Customer NIF", "Added by", "File", "QR"];
+  const lines = [head.map(cell).join(";")];
+  for (const r of items) lines.push([r.id, r.date, r.company, r.nif, r.invoiceNumber, r.total, r.customerNif, r.addedBy, r.blob ? fileName(r) : "", r.qr].map(cell).join(";"));
+  return "\uFEFF" + lines.join("\r\n");
+}
+function exportName() { return `receipts_${today()}_${slug(me, 20)}`; }
+function pickBatch(items) {   // as many as fit in one email
+  const batch = []; let size = 0;
+  for (const r of items) { const s = (r.blob?.size || 0) + 2000; if (batch.length && size + s > SEND_LIMIT) break; batch.push(r); size += s; }
+  return batch;
+}
+function filesFor(items) {
+  return [new File([buildCsv(items)], exportName() + ".csv", { type: "text/csv" }),
+    ...items.filter((r) => r.blob).map((r) => new File([r.blob], fileName(r), { type: r.fileType === "pdf" ? "application/pdf" : "image/jpeg" }))];
+}
+async function send(items) {
+  if (!items.length) { toast("Nothing to send"); return; }
+  const batch = pickBatch(items);
+  const files = filesFor(batch);
+  if (!(navigator.canShare && navigator.canShare({ files }))) { toast("This phone can't share files from here. Saving a zip instead."); return saveZip(items); }
+  const rest = items.length - batch.length;
+  try {
+    await navigator.share({ files, title: `Receipts from ${me}`,
+      text: `${batch.length} receipt${batch.length === 1 ? "" : "s"} from ${me}, ${fmtDate(today())}.${office ? "" : ""}` });
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    toast("Sharing failed. Try Save as zip."); return;
+  }
+  await markSent(batch);
+  toast(rest ? `${batch.length} sent. Tap Send again for the other ${rest}.` : "Sent. Thanks!");
+}
+async function saveZip(items) {
+  if (!items.length) { toast("Nothing to send"); return; }
+  if (!window.JSZip) { toast("Zip isn't available"); return; }
+  const zip = new JSZip();
+  for (const f of filesFor(items)) zip.file(f.name, f);
+  const blob = await zip.generateAsync({ type: "blob" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = exportName() + ".zip";
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  pendingMark = items;
+  $("#markText").textContent = `Saved ${a.download} to Downloads (${mb(blob.size)}). Once you've sent that file to the office, mark these ${items.length} as sent.`;
+  $("#markBox").hidden = false;
+}
+async function markSent(items) {
+  const at = new Date().toISOString();
+  for (const r of items) await db.put({ ...r, sentAt: at });
+  await refresh();
+}
+
+/* ---------- list ---------- */
+async function refresh() {
+  try { receipts = await db.all(); } catch { receipts = []; }
+  receipts.sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.createdAt.localeCompare(a.createdAt));
+  const unsent = receipts.filter((r) => !r.sentAt);
+  $("#unsentCount").textContent = unsent.length;
+  $("#sendBtn").disabled = $("#zipBtn").disabled = !unsent.length;
+  const size = unsent.reduce((s, r) => s + (r.blob?.size || 0), 0);
+  $("#sendNote").textContent = unsent.length
+    ? `${unsent.length} receipt${unsent.length === 1 ? "" : "s"} (${mb(size)}). Send by email${office ? " to " + office : ""} at the end of the day. Gmail or Google Drive keep the photos intact; WhatsApp shrinks and renames them.`
+    : "Everything on this phone has been sent.";
+  $("#nameChip").textContent = me + " ⚙";
+  const shown = filter === "unsent" ? unsent : receipts;
+  if (!shown.length) {
+    $("#list").innerHTML = `<div class="empty"><b>${filter === "unsent" ? "Nothing waiting" : "No receipts yet"}</b>${filter === "unsent" ? "New scans show here until you send them." : "Tap “Scan a receipt” after shopping."}</div>`;
+    return;
+  }
+  $("#list").innerHTML = `<ul class="rows">` + shown.map((r) => {
+    const thumb = r.thumb ? `<img class="thumb" alt="" src="${r.thumb}">` : `<span class="thumb">${r.fileType === "pdf" ? "PDF" : "—"}</span>`;
+    const pill = r.sentAt ? `<span class="pill sent">Sent ${esc(fmtDate(r.sentAt).slice(0, 5))}</span>` : `<span class="pill new">Not sent</span>`;
+    return `<li class="row" tabindex="0" data-id="${esc(r.id)}">${thumb}<div class="who"><b>${esc(r.company || (r.nif ? "NIF " + r.nif : "Unknown company"))}</b>
+      <span>${esc(r.invoiceNumber || "No number")} · ${fmtDate(r.date)}</span></div><div class="when">${pill}<span>${esc(fmtMoney(r.total))}</span></div></li>`;
+  }).join("") + `</ul>`;
+}
+
+/* ---------- settings ---------- */
+function showSettings() {
+  $("#setName").value = me; $("#setOffice").value = office; $("#setNif").value = companyNif; $("#settings").hidden = false;
+  if (navigator.storage?.estimate) navigator.storage.estimate().then((e) => { $("#storageNote").textContent = `${receipts.length} receipts on this phone, using ${mb(e.usage || 0)}.`; }).catch(() => {});
+  $("#settings").scrollIntoView({ behavior: "smooth" });
+}
+
+/* ---------- start ---------- */
+async function takeShared() {   // files shared into the app from Gmail, Files, etc. (Android)
+  try {
+    if (!("caches" in window)) return;
+    const c = await caches.open("rb-shared"), keys = await c.keys(), files = [];
+    for (const k of keys) {
+      const res = await c.match(k);
+      const name = decodeURIComponent(res.headers.get("X-Name") || "shared");
+      files.push(new File([await res.blob()], name, { type: res.headers.get("Content-Type") || "" }));
+      await c.delete(k);
+    }
+    if (files.length) addFiles(files);
+  } catch {}
+}
+function start() {
+  $("#setup").hidden = true; $("#main").hidden = false;
+  refresh(); takeShared();
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  if (!standalone) { $("#installHint").hidden = false; $("#installHint").textContent = "Install this app: open the browser menu ⋮ and tap “Install app” or “Add to Home screen”. It then works without internet."; }
+}
+
+$("#setupForm").addEventListener("submit", (e) => {
+  e.preventDefault(); const n = $("#nameInput").value.trim(); if (!n) return $("#nameInput").focus();
+  me = n; office = $("#officeInput").value.trim(); store.set("rb-name", me); store.set("rb-office", office); start();
+});
+$("#nameChip").addEventListener("click", showSettings);
+$("#setClose").addEventListener("click", () => ($("#settings").hidden = true));
+$("#setSave").addEventListener("click", () => {
+  const n = $("#setName").value.trim(); if (n) { me = n; store.set("rb-name", me); }
+  office = $("#setOffice").value.trim(); store.set("rb-office", office);
+  companyNif = $("#setNif").value.replace(/\D/g, ""); store.set("rb-company-nif", companyNif || "none");
+  $("#settings").hidden = true; refresh(); toast("Saved");
+});
+$("#resendWeek").addEventListener("click", () => { const from = new Date(Date.now() - 7 * 864e5).toISOString(); send(receipts.filter((r) => r.createdAt >= from)); });
+$("#cleanup").addEventListener("click", async (e) => {
+  const b = e.currentTarget;
+  if (!b.classList.contains("armed")) { b.classList.add("armed"); b.textContent = "Tap again to remove"; setTimeout(() => { b.classList.remove("armed"); b.textContent = "Remove sent older than 30 days"; }, 4000); return; }
+  const cut = new Date(Date.now() - 30 * 864e5).toISOString(); let n = 0;
+  for (const r of receipts) if (r.sentAt && r.sentAt < cut) { await db.del(r.id); n++; }
+  b.classList.remove("armed"); b.textContent = "Remove sent older than 30 days"; toast(`Removed ${n}`); refresh();
+});
+$("#cam").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+$("#pick").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+$("#manual").addEventListener("click", () => { queue = []; openEditor({}); $("#company").focus(); });
+$("#cancel").addEventListener("click", closeEditor);
+$("#skip").addEventListener("click", nextInQueue);
+$("#form").addEventListener("submit", save);
+$("#del").addEventListener("click", onDelete);
+$("#invoice").addEventListener("input", checkDup);
+$("#nif").addEventListener("change", async () => { const n = $("#nif").value.replace(/\D/g, ""); checkDup();
+  if (!$("#company").value && n.length === 9) { const name = await lookupName(n); if (name && !$("#company").value) $("#company").value = name; } });
+$("#preview").addEventListener("click", (e) => e.target.classList.toggle("big"));
+$("#sendBtn").addEventListener("click", () => send(receipts.filter((r) => !r.sentAt).reverse()));
+$("#zipBtn").addEventListener("click", () => saveZip(receipts.filter((r) => !r.sentAt).reverse()));
+$("#markYes").addEventListener("click", async () => { if (pendingMark) await markSent(pendingMark); pendingMark = null; $("#markBox").hidden = true; toast("Marked as sent"); });
+$("#markNo").addEventListener("click", () => { pendingMark = null; $("#markBox").hidden = true; });
+document.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => {
+  filter = b.dataset.filter; document.querySelectorAll("[data-filter]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); refresh();
+}));
+$("#list").addEventListener("click", (e) => { const el = e.target.closest(".row"); const r = el && receipts.find((x) => x.id === el.dataset.id); if (r) { queue = []; openEditor(r); } });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("#main").hidden) takeShared(); });
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+me = store.get("rb-name"); office = store.get("rb-office");
+{ const n = store.get("rb-company-nif"); if (n) companyNif = n === "none" ? "" : n; }
+if (me) start(); else { $("#setup").hidden = false; }
+</script>
+</body>
+</html>
