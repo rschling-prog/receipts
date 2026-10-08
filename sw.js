@@ -1,6 +1,6 @@
 // Receipt Box phone app: keeps the app working without internet,
 // and accepts files shared into it (Android "Share" > Receipt Box).
-const VERSION = "rb-phone-v8";
+const VERSION = "rb-phone-v9";
 const LIBS = ["./jsQR.js", "./jszip.min.js", "./pdf.min.js", "./pdf.worker.min.js"];
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", ...LIBS];
 

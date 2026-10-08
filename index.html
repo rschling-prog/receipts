@@ -96,6 +96,13 @@ h2 { font-size: 16px; margin: 0; font-weight: 650; }
 .empty b { display: block; color: var(--ink); font-size: 16px; margin-bottom: 4px; }
 .center { min-height: 70vh; display: flex; flex-direction: column; justify-content: center; gap: 14px; max-width: 360px; margin: 0 auto; width: 100%; }
 .big-input { width: 100%; min-height: 54px; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: 600 20px var(--font); }
+.scanner { position: fixed; inset: 0; z-index: 10; background: #000; display: flex; flex-direction: column; }
+.scanner video { flex: 1; min-height: 0; width: 100%; object-fit: cover; }
+.scan-frame { position: absolute; left: 50%; top: 42%; width: min(70vw, 340px); aspect-ratio: 1; transform: translate(-50%, -50%);
+  border: 3px solid #5CC2A5; border-radius: 18px; box-shadow: 0 0 0 100vmax rgba(0,0,0,.35); pointer-events: none; }
+.scan-bar { padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); background: #0E1412; color: #E5ECE9; display: flex; flex-direction: column; gap: 12px; }
+.scan-bar p { margin: 0; text-align: center; font-size: 16px; }
+.scan-bar .btn { flex: 1; }
 .toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg);
   padding: 10px 18px; border-radius: 999px; font-weight: 650; font-size: 14px; max-width: calc(100% - 32px); z-index: 5; text-align: center; }
 </style>
@@ -121,10 +128,10 @@ h2 { font-size: 16px; margin: 0; font-weight: 650; }
 
   <section class="capture" id="capture">
     <input class="vh" type="file" id="cam" accept="image/*" capture="environment">
-    <label for="cam" class="scan-btn">
+    <button type="button" class="scan-btn" id="scanBtn" style="border:0;width:100%">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M8 9h8M8 12h8M8 15h5"/></svg>
       Scan a receipt
-    </label>
+    </button>
     <input class="vh" type="file" id="pick" accept="image/*,application/pdf,.pdf" multiple>
     <label for="pick" class="alt-btn">Add photos or PDF invoices</label>
     <button class="link" type="button" id="manual">Type one in without a photo</button>
@@ -195,6 +202,17 @@ h2 { font-size: 16px; margin: 0; font-weight: 650; }
       <button class="btn danger" type="button" id="cleanup">Remove sent older than 30 days</button>
     </div>
   </section>
+</div>
+<div class="scanner" id="scanner" hidden>
+  <video id="scanVideo" playsinline muted></video>
+  <div class="scan-frame"></div>
+  <div class="scan-bar">
+    <p id="scanMsg">Point the camera at the QR code on the receipt</p>
+    <div class="actions">
+      <label for="cam" class="btn" id="scanPhoto">No QR code? Take a photo</label>
+      <button class="btn" type="button" id="scanClose">Cancel</button>
+    </div>
+  </div>
 </div>
 <div class="toast" id="toast" hidden></div>
 
@@ -287,7 +305,18 @@ function scanCanvas(c, both) {
   const q = window.jsQR && jsQR(d.data, c.width, c.height, { inversionAttempts: both ? "attemptBoth" : "dontInvert" });
   return q && q.data ? q.data : null;
 }
-async function findQr(src) {   // a few sizes and crops; yields between tries so the page stays responsive
+const nativeDet = (() => { try { return "BarcodeDetector" in window ? new BarcodeDetector({ formats: ["qr_code"] }) : null; } catch { return null; } })();
+async function nativeQr(src) {
+  if (!nativeDet) return null;
+  try {
+    const codes = await nativeDet.detect(src);
+    const inv = codes.find((c) => parseAT(c.rawValue));
+    return inv ? inv.rawValue : (codes[0] ? codes[0].rawValue : null);
+  } catch { return null; }
+}
+async function findQr(src) {   // the phone's reader first, then a few sizes and crops with jsQR
+  const n = await nativeQr(src);
+  if (n && parseAT(n)) return n;
   const w = src.width, h = src.height;
   const tries = [
     [0, 0, w, h, 1400], [0, h * 0.45, w, h * 0.55, 1600],   // QR codes usually sit at the bottom
@@ -399,6 +428,69 @@ async function readItem(item) {
   }
 }
 
+/* ---------- live QR scanner: read the code first, then photograph the slip ---------- */
+let scanStream = null, scanLoop = 0, scanBusy = false;
+async function openScanner() {
+  if (!navigator.mediaDevices?.getUserMedia) { $("#cam").click(); return; }
+  $("#scanMsg").textContent = "Point the camera at the QR code on the receipt";
+  $("#scanner").hidden = false;
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+  } catch {
+    $("#scanner").hidden = true;
+    toast("The camera isn't allowed for this app. Opening the photo camera instead.");
+    $("#cam").click();
+    return;
+  }
+  const v = $("#scanVideo"); v.srcObject = scanStream;
+  try { await v.play(); } catch {}
+  const c = document.createElement("canvas");
+  const tick = async () => {
+    if (!scanStream) return;
+    if (!scanBusy && v.videoWidth) {
+      scanBusy = true;
+      try {
+        let raw = await nativeQr(v);
+        if (!raw && !nativeDet) {   // older phones: jsQR on the middle of the picture
+          const side = Math.min(v.videoWidth, v.videoHeight) * 0.8, sx = (v.videoWidth - side) / 2, sy = (v.videoHeight - side) / 2;
+          c.width = c.height = Math.min(900, Math.round(side));
+          const g = c.getContext("2d", { willReadFrequently: true }); g.drawImage(v, sx, sy, side, side, 0, 0, c.width, c.height);
+          raw = scanCanvas(c, true);
+        }
+        if (raw && parseAT(raw)) { scanBusy = false; return onQrRead(raw); }
+        if (raw) $("#scanMsg").textContent = "That QR code isn't an invoice code. Look for the one next to ATCUD.";
+      } catch {}
+      scanBusy = false;
+    }
+    scanLoop = setTimeout(tick, 200);
+  };
+  tick();
+}
+function closeScanner() {
+  clearTimeout(scanLoop);
+  if (scanStream) scanStream.getTracks().forEach((t) => t.stop());
+  scanStream = null;
+  $("#scanVideo").srcObject = null;
+  $("#scanner").hidden = true;
+}
+async function onQrRead(raw) {
+  closeScanner();
+  try { navigator.vibrate && navigator.vibrate(80); } catch {}
+  queue = [];
+  openEditor({});
+  const item = editing.item = { kind: "image", fileType: "jpg", parts: [], qr: raw };
+  const at = parseAT(raw);
+  fillEmpty(at);
+  if (at.nif && !$("#company").value) { const n = await lookupName(at.nif); if (n && !$("#company").value) $("#company").value = n; }
+  checkDup();
+  $("#moreBtn").textContent = "📷 Take a photo of the receipt";
+  let msg = "QR code read. Now take a photo of the whole receipt (several for a long slip).";
+  if (!(at.docType in INVOICE_TYPES)) msg = `This is a ${at.docType || "document"} (delivery note or payment receipt), not an invoice. Ask for the fatura.`;
+  else if (companyNif && at.customerNif !== companyNif) msg = (at.customerNif ? `Made out to NIF ${at.customerNif}, not the company's NIF ${companyNif}.` : `No company NIF on this receipt. Ask the till for a fatura with NIF ${companyNif}.`) + " Then take the photo.";
+  setStatus(msg, at.docType in INVOICE_TYPES && (!companyNif || at.customerNif === companyNif) ? "ok" : "err");
+}
+
 /* ---------- long slips: several photos of one receipt, joined top to bottom ---------- */
 async function stitch(blobs) {
   const imgs = [];
@@ -453,6 +545,7 @@ async function addPhotoToCurrent(file) {
     checkDup();
   }
   const n = item.parts.length;
+  $("#moreBtn").textContent = "+ Add another photo of this receipt";
   setStatus(`${n} photo${n === 1 ? "" : "s"} of this receipt` + (readNow ? " · QR code read, details filled in. Check and save." : item.qr ? " · QR code already read." : " · no QR code found yet: add a close-up of it."), item.qr ? "ok" : "");
 }
 
@@ -527,6 +620,7 @@ function openEditor(r) {
   $("#editorTitle").textContent = r.id ? "Edit receipt" : "New receipt";
   $("#del").hidden = !r.id; $("#skip").hidden = true; $("#dup").hidden = true;
   $("#moreBtn").hidden = !!(r.id && r.fileType === "pdf");
+  $("#moreBtn").textContent = "+ Add another photo of this receipt";
   disarmDelete();
   setStatus(r.id ? (r.sentAt ? `Sent ${fmtDate(r.sentAt)}. If you change it, it will be sent again.` : "Not sent yet.") : "", "");
   $("#capture").hidden = true; $("#editor").hidden = false;
@@ -546,7 +640,9 @@ async function save(ev) {
   const d = { company: $("#company").value.trim(), date: $("#date").value, invoiceNumber: $("#invoice").value.trim(),
     nif: $("#nif").value.replace(/\D/g, ""), total: $("#total").value.trim().replace(",", ".") };
   const item = editing.item;
-  if (item && !item.blob) { setStatus("Still reading the file…", "busy"); return; }
+  if (item && item.kind === "image" && item.parts && !item.parts.length && item.qr) {
+    if (!editing.noPhotoOk) { editing.noPhotoOk = true; setStatus("No photo yet: the accountant needs one. Tap “Take a photo”, or tap Save again to save without it.", "err"); return; }
+  } else if (item && !item.blob) { setStatus("Still reading the file…", "busy"); return; }
   if (!d.company && !d.invoiceNumber && !item) { setStatus("Add at least the company or the invoice number.", "err"); return; }
   const rec = editing.record
     ? { ...editing.record, ...d, sentAt: null, updatedAt: new Date().toISOString(),
@@ -695,6 +791,9 @@ $("#cleanup").addEventListener("click", async (e) => {
   b.classList.remove("armed"); b.textContent = "Remove sent older than 30 days"; toast(`Removed ${n}`); refresh();
 });
 $("#cam").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+$("#scanBtn").addEventListener("click", openScanner);
+$("#scanClose").addEventListener("click", closeScanner);
+$("#scanPhoto").addEventListener("click", () => closeScanner());
 $("#camMore").addEventListener("change", (e) => { addPhotoToCurrent(e.target.files[0]); e.target.value = ""; });
 $("#pick").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
 $("#manual").addEventListener("click", () => { queue = []; openEditor({}); $("#company").focus(); });
