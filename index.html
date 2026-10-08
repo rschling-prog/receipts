@@ -137,6 +137,8 @@ h2 { font-size: 16px; margin: 0; font-weight: 650; }
         <button class="link" type="button" id="cancel">Cancel</button>
       </div>
       <img class="preview" id="preview" alt="The receipt" hidden>
+      <input class="vh" type="file" id="camMore" accept="image/*" capture="environment">
+      <label for="camMore" class="alt-btn" id="moreBtn">+ Add another photo of this receipt</label>
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <div class="field"><label for="company">Company</label><input id="company" placeholder="e.g. Lidl & Companhia"></div>
       <div class="grid2">
@@ -210,7 +212,19 @@ const store = {
   get(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
-function suppliers() { try { return JSON.parse(store.get("rb-suppliers") || "{}"); } catch { return {}; } }
+// Shops checked against the EU VAT register. Names you type yourself take priority and are remembered.
+const KNOWN_SUPPLIERS = {
+  "503340855": "Lidl & Companhia",
+  "502011475": "Modelo Continente Hipermercados, S.A.",
+  "500829993": "Pingo Doce - Distribuição Alimentar, S.A.",
+  "504615947": "MEO - Serviços de Comunicações e Multimédia, S.A.",
+  "503504564": "EDP Comercial - Comercialização de Energia, S.A.",
+  "500697370": "Petrogal, S.A. (Galp)",
+  "500077568": "CTT - Correios de Portugal, S.A.",
+  "506848558": "BCM Bricolage, S.A. (Leroy Merlin)",
+  "503630330": "Worten - Equipamentos para o Lar, S.A.",
+};
+function suppliers() { let own = {}; try { own = JSON.parse(store.get("rb-suppliers") || "{}"); } catch {} return { ...KNOWN_SUPPLIERS, ...own }; }
 function rememberSupplier(nif, name) { if (!nif || !name) return; const s = suppliers(); s[nif] = name; store.set("rb-suppliers", JSON.stringify(s)); }
 /* Company name from the NIF via the EU VAT register (VIES). Needs internet; without it the office PC fills it in. */
 function niceName(n) {
@@ -227,18 +241,10 @@ function niceName(n) {
   }).join(" ");
 }
 async function lookupName(nif) {
+  // The EU VAT register can't be asked from a phone web app (it blocks web pages).
+  // Names come from the built-in list or ones typed before; the office PC fills in the rest on import.
   nif = String(nif || "").replace(/\D/g, "");
-  if (nif.length !== 9) return "";
-  const known = suppliers()[nif]; if (known) return known;
-  if (!navigator.onLine) return "";
-  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 7000);
-  try {
-    const r = await fetch(`https://ec.europa.eu/taxation_customs/vies/rest-api/ms/PT/vat/${nif}`, { signal: ctl.signal, headers: { Accept: "application/json" } });
-    const j = await r.json();
-    const name = j && j.isValid && j.name && j.name.replace(/[-\s]/g, "") ? niceName(j.name) : "";
-    if (name) rememberSupplier(nif, name);
-    return name;
-  } catch { return ""; } finally { clearTimeout(t); }
+  return suppliers()[nif] || "";
 }
 
 const db = (() => {
@@ -386,10 +392,68 @@ async function readItem(item) {
     const img = await loadImage(f);
     const q = await findQr(img); if (q) item.qr = q;
     item.blob = await toBlob(canvasFrom(img, 0, 0, img.width, img.height, 1800), 0.8);
+    item.parts = [item.blob];
     item.fileType = "jpg";
     item.preview = URL.createObjectURL(item.blob);
     item.thumb = canvasFrom(img, 0, 0, img.width, img.height, 200).toDataURL("image/jpeg", 0.7);
   }
+}
+
+/* ---------- long slips: several photos of one receipt, joined top to bottom ---------- */
+async function stitch(blobs) {
+  const imgs = [];
+  for (const b of blobs) imgs.push(await loadImage(b));
+  let gap = 14;
+  let W = Math.min(1400, Math.max(...imgs.map((i) => i.width)));
+  let hs = imgs.map((i) => Math.round(i.height * W / i.width));
+  const total = () => hs.reduce((a, b) => a + b, 0) + gap * (imgs.length - 1);
+  const maxPixels = 14e6;   // phones refuse very large images
+  if (W * total() > maxPixels) {
+    const f = Math.sqrt(maxPixels / (W * total()));
+    W = Math.round(W * f); hs = hs.map((h) => Math.round(h * f)); gap = Math.max(4, Math.round(gap * f));
+  }
+  const H = total();
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d"); g.fillStyle = "#d3dbd8"; g.fillRect(0, 0, W, H);
+  let y = 0;
+  imgs.forEach((im, i) => { g.drawImage(im, 0, y, W, hs[i]); y += hs[i] + gap; });
+  return { blob: await toBlob(c, 0.8), canvas: c };
+}
+async function addPhotoToCurrent(file) {
+  if (!editing || !file) return;
+  const ed = editing;
+  let item = ed.item;
+  if (!item) {   // a typed-in receipt, or a saved one being edited
+    const r = ed.record;
+    item = ed.item = { kind: "image", fileType: "jpg", parts: r && r.fileType === "jpg" && r.blob ? [r.blob] : [], qr: (r && r.qr) || "" };
+  }
+  if (item.kind === "pdf") return;
+  setStatus("Adding the photo…", "busy");
+  await nextFrame();
+  let img;
+  try { img = await loadImage(file); } catch { setStatus("That photo couldn't be opened. Try again.", "err"); return; }
+  const part = await toBlob(canvasFrom(img, 0, 0, img.width, img.height, 1800), 0.8);
+  item.parts = [...(item.parts || []), part];
+  let readNow = false;
+  if (!item.qr) {
+    setStatus("Looking for the invoice QR code in this photo…", "busy");
+    const q = await findQr(img);
+    if (q && parseAT(q)) { item.qr = q; readNow = true; }
+  }
+  const { blob, canvas } = await stitch(item.parts);
+  if (editing !== ed) return;
+  item.blob = blob; item.fileType = "jpg";
+  item.preview = URL.createObjectURL(blob);
+  item.thumb = canvasFrom(canvas, 0, 0, canvas.width, Math.min(canvas.height, canvas.width * 1.4), 200).toDataURL("image/jpeg", 0.7);
+  $("#preview").src = item.preview; $("#preview").hidden = false;
+  if (readNow) {
+    const at = parseAT(item.qr);
+    fillEmpty(at);
+    if (at.nif && !$("#company").value) { const n = suppliers()[at.nif] || await lookupName(at.nif); if (n && !$("#company").value) $("#company").value = n; }
+    checkDup();
+  }
+  const n = item.parts.length;
+  setStatus(`${n} photo${n === 1 ? "" : "s"} of this receipt` + (readNow ? " · QR code read, details filled in. Check and save." : item.qr ? " · QR code already read." : " · no QR code found yet: add a close-up of it."), item.qr ? "ok" : "");
 }
 
 /* ---------- review slip ---------- */
@@ -409,6 +473,7 @@ async function nextInQueue() {
   if (!item) { closeEditor(); return; }
   openEditor({});
   editing.item = item;
+  $("#moreBtn").hidden = item.kind === "pdf";
   setStatus(item.kind === "pdf" ? "Opening the PDF…" : "Looking for the invoice QR code…", "busy");
   await nextFrame();
   try { await withTimeout(readItem(item), 60000, "Reading this file took too long. Fill in the fields."); }
@@ -437,10 +502,11 @@ async function nextInQueue() {
       : `No company NIF on this receipt. Next time ask the till for a fatura with NIF ${companyNif}.`, "err");
   }
   else if (at) setStatus($("#company").value
-      ? (fromVies ? "Read from the QR code; company name from the EU VAT register. Check and save." : "Read from the invoice QR code. Check and save.")
-      : "Read from the QR code. No internet for the company name: save anyway, the office fills it in.", "ok");
+      ? "Read from the invoice QR code. Check and save."
+      : "Read from the QR code. The company name is added at the office, or type it once and this phone remembers it.", "ok");
   else if (item.note) setStatus(item.note, "err");
   else if (item.kind === "pdf" && (got.invoiceNumber || got.date)) setStatus("Filled from the PDF text. Check every field before saving. (" + (item.diag || "") + ")", "");
+  else if (item.kind === "image") setStatus("No QR code found in this photo. Tap “+ Add another photo” and take a close-up of the QR code, or fill in the fields.", "err");
   else setStatus("Nothing could be read automatically. Fill in the fields." + (item.diag ? " (" + item.diag + ")" : ""), "err");
 }
 function fillEmpty(got) {
@@ -460,6 +526,7 @@ function openEditor(r) {
   }
   $("#editorTitle").textContent = r.id ? "Edit receipt" : "New receipt";
   $("#del").hidden = !r.id; $("#skip").hidden = true; $("#dup").hidden = true;
+  $("#moreBtn").hidden = !!(r.id && r.fileType === "pdf");
   disarmDelete();
   setStatus(r.id ? (r.sentAt ? `Sent ${fmtDate(r.sentAt)}. If you change it, it will be sent again.` : "Not sent yet.") : "", "");
   $("#capture").hidden = true; $("#editor").hidden = false;
@@ -482,7 +549,8 @@ async function save(ev) {
   if (item && !item.blob) { setStatus("Still reading the file…", "busy"); return; }
   if (!d.company && !d.invoiceNumber && !item) { setStatus("Add at least the company or the invoice number.", "err"); return; }
   const rec = editing.record
-    ? { ...editing.record, ...d, sentAt: null, updatedAt: new Date().toISOString() }
+    ? { ...editing.record, ...d, sentAt: null, updatedAt: new Date().toISOString(),
+        ...(item && item.blob ? { blob: item.blob, fileType: "jpg", thumb: item.thumb, qr: item.qr || editing.record.qr || "" } : {}) }
     : { id: uid(), ...d, customerNif: editing.customerNif, addedBy: me, qr: item?.qr || "", source: item?.kind || "manual",
         blob: item?.blob || null, fileType: item?.fileType || "", thumb: item?.thumb || "", createdAt: new Date().toISOString(), sentAt: null };
   try { await db.put(rec); }
@@ -627,6 +695,7 @@ $("#cleanup").addEventListener("click", async (e) => {
   b.classList.remove("armed"); b.textContent = "Remove sent older than 30 days"; toast(`Removed ${n}`); refresh();
 });
 $("#cam").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+$("#camMore").addEventListener("change", (e) => { addPhotoToCurrent(e.target.files[0]); e.target.value = ""; });
 $("#pick").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
 $("#manual").addEventListener("click", () => { queue = []; openEditor({}); $("#company").focus(); });
 $("#cancel").addEventListener("click", closeEditor);

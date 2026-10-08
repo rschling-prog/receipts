@@ -1,8 +1,8 @@
 // Receipt Box phone app: keeps the app working without internet,
 // and accepts files shared into it (Android "Share" > Receipt Box).
-const VERSION = "rb-phone-v5";
-const FILES = ["./", "./index.html", "./manifest.webmanifest", "./jsQR.js", "./jszip.min.js",
-  "./pdf.min.js", "./pdf.worker.min.js", "./icon-192.png", "./icon-512.png"];
+const VERSION = "rb-phone-v8";
+const LIBS = ["./jsQR.js", "./jszip.min.js", "./pdf.min.js", "./pdf.worker.min.js"];
+const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", ...LIBS];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
@@ -17,9 +17,10 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
-  if (url.origin !== location.origin) return;
+  const ours = url.origin === location.origin;
+  if (!ours) return;
 
-  if (req.method === "POST" && url.pathname.endsWith("/share")) {
+  if (ours && req.method === "POST" && url.pathname.endsWith("/share")) {
     e.respondWith((async () => {
       try {
         const form = await req.formData();
@@ -39,7 +40,7 @@ self.addEventListener("fetch", (e) => {
 
   if (req.method !== "GET") return;
   e.respondWith((async () => {
-    const hit = await caches.match(req, { ignoreSearch: true });
+    const hit = await caches.match(req, { ignoreSearch: ours });
     if (hit) return hit;
     try { return await fetch(req); }
     catch (err) {
