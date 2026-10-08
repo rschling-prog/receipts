@@ -1,11 +1,14 @@
 // Receipt Box phone app: keeps the app working without internet,
 // and accepts files shared into it (Android "Share" > Receipt Box).
-const VERSION = "rb-phone-v9";
+const VERSION = "rb-phone-v10";
 const LIBS = ["./jsQR.js", "./jszip.min.js", "./pdf.min.js", "./pdf.worker.min.js"];
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", ...LIBS];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: "reload" = straight from the internet, never an older copy the phone's browser kept
+  e.waitUntil(caches.open(VERSION)
+    .then((c) => c.addAll(FILES.map((u) => new Request(u, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {
@@ -17,10 +20,9 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
-  const ours = url.origin === location.origin;
-  if (!ours) return;
+  if (url.origin !== location.origin) return;
 
-  if (ours && req.method === "POST" && url.pathname.endsWith("/share")) {
+  if (req.method === "POST" && url.pathname.endsWith("/share")) {
     e.respondWith((async () => {
       try {
         const form = await req.formData();
@@ -39,13 +41,23 @@ self.addEventListener("fetch", (e) => {
   }
 
   if (req.method !== "GET") return;
+  const isPage = req.mode === "navigate" || url.pathname.endsWith("/") || url.pathname.endsWith("/index.html");
+  if (isPage) {
+    // the app page: newest from the internet when online, the stored copy when offline
+    e.respondWith((async () => {
+      try {
+        const fresh = await fetch(req, { cache: "no-cache" });
+        if (fresh.ok) { const c = await caches.open(VERSION); c.put("./index.html", fresh.clone()); }
+        return fresh;
+      } catch (err) {
+        return (await caches.match("./index.html")) || (await caches.match("./"));
+      }
+    })());
+    return;
+  }
   e.respondWith((async () => {
-    const hit = await caches.match(req, { ignoreSearch: ours });
+    const hit = await caches.match(req, { ignoreSearch: true });
     if (hit) return hit;
-    try { return await fetch(req); }
-    catch (err) {
-      if (req.mode === "navigate") return caches.match("./index.html");
-      throw err;
-    }
+    return fetch(req);
   })());
 });

@@ -197,6 +197,7 @@ h2 { font-size: 16px; margin: 0; font-weight: 650; }
     <div class="field"><label for="setNif">Company NIF (should be on every invoice)</label><input id="setNif" class="mono" inputmode="numeric" maxlength="9"></div>
     <div class="actions"><button class="btn primary" type="button" id="setSave">Save</button><button class="btn" type="button" id="setClose">Close</button></div>
     <p class="muted" id="storageNote"></p>
+    <p class="muted" id="versionNote"></p>
     <div class="actions">
       <button class="btn" type="button" id="resendWeek">Send last 7 days again</button>
       <button class="btn danger" type="button" id="cleanup">Remove sent older than 30 days</button>
@@ -745,6 +746,7 @@ async function refresh() {
 /* ---------- settings ---------- */
 function showSettings() {
   $("#setName").value = me; $("#setOffice").value = office; $("#setNif").value = companyNif; $("#settings").hidden = false;
+  $("#versionNote").textContent = "App version " + APP_VERSION;
   if (navigator.storage?.estimate) navigator.storage.estimate().then((e) => { $("#storageNote").textContent = `${receipts.length} receipts on this phone, using ${mb(e.usage || 0)}.`; }).catch(() => {});
   $("#settings").scrollIntoView({ behavior: "smooth" });
 }
@@ -815,7 +817,13 @@ document.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("cl
 $("#list").addEventListener("click", (e) => { const el = e.target.closest(".row"); const r = el && receipts.find((x) => x.id === el.dataset.id); if (r) { queue = []; openEditor(r); } });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("#main").hidden) takeShared(); });
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+const APP_VERSION = "10";
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
+  // when a new version has just been installed, switch to it once
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (!reloaded && !editing) { reloaded = true; location.reload(); } });
+}
 me = store.get("rb-name"); office = store.get("rb-office");
 { const n = store.get("rb-company-nif"); if (n) companyNif = n === "none" ? "" : n; }
 if (me) start(); else { $("#setup").hidden = false; }
